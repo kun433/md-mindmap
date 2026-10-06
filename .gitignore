@@ -1,0 +1,17 @@
+# 构建产物
+build/
+dist/
+*.spec
+*.pyc
+__pycache__/
+*.egg-info/
+
+# 本地导出与临时文件
+out/
+.venv/
+venv/
+.idea/
+.vscode/
+*.log
+Thumbs.db
+Desktop.ini
