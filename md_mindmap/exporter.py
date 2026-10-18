@@ -1,26 +1,60 @@
-"""导出思维导图为 PNG / SVG / 独立 HTML。"""
+"""把图形场景（节点 + 连线）导出为 PNG / SVG / 独立 HTML。
+
+渲染层只认识两件事：节点（圆角矩形 / 圆点 / 纯文字）和折线，
+因此思维导图、鱼骨图、时间轴、组织结构图共用同一套导出代码。
+"""
 
 from __future__ import annotations
 
+import math
 import os
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw
 
 from .fonts import load_font
-from .layout import Layout, LayoutConfig, Placed, bezier_points
+from .layout import Layout, Placed
 from .theme import LIGHT, Theme
 
 __all__ = [
+    "MARGIN",
+    "arrow_head",
     "export_all",
+    "html_document",
     "render_png",
     "render_svg",
     "svg_document",
-    "html_document",
 ]
 
 MARGIN = 36
 _FONT_STACK = "'Microsoft YaHei','微软雅黑','PingFang SC','Source Han Sans SC','Segoe UI',sans-serif"
+
+
+def _pairs(points: Sequence[float]) -> List[Tuple[float, float]]:
+    return [(points[index], points[index + 1]) for index in range(0, len(points) - 1, 2)]
+
+
+def arrow_head(
+    points: Sequence[float], size: float
+) -> Optional[List[Tuple[float, float]]]:
+    """按折线末段方向生成箭头三角形。"""
+    if len(points) < 4:
+        return None
+    x1, y1 = points[-4], points[-3]
+    x2, y2 = points[-2], points[-1]
+    angle = math.atan2(y2 - y1, x2 - x1)
+    if abs(x2 - x1) < 1e-6 and abs(y2 - y1) < 1e-6:
+        return None
+    left = (x2 - size * math.cos(angle - 0.42), y2 - size * math.sin(angle - 0.42))
+    right = (x2 - size * math.cos(angle + 0.42), y2 - size * math.sin(angle + 0.42))
+    return [(x2, y2), left, right]
+
+
+def _node_text_origin(placed: Placed) -> Tuple[float, float, float]:
+    """返回 (文字左边, 首行中心 y, 行高)。"""
+    box = placed.box
+    line_height = box.line_spacing * box.font_size
+    return box.left + box.pad_x, box.top + box.pad_y + line_height / 2, line_height
 
 
 # --------------------------------------------------------------------------- #
@@ -28,12 +62,19 @@ _FONT_STACK = "'Microsoft YaHei','微软雅黑','PingFang SC','Source Han Sans S
 # --------------------------------------------------------------------------- #
 
 
-def render_png(layout: Layout, path: str, theme: Theme = LIGHT, scale: int = 2) -> str:
+def render_png(
+    layout: Layout,
+    path: str,
+    theme: Theme = LIGHT,
+    scale: int = 2,
+    transparent: bool = False,
+) -> str:
     """渲染为 PNG 图片（默认 2 倍超采样后缩放，边缘更平滑）。"""
     scale = max(1, min(4, int(scale)))
     width = int((layout.width + MARGIN * 2) * scale)
     height = int((layout.height + MARGIN * 2) * scale)
-    image = Image.new("RGB", (max(1, width), max(1, height)), theme.bg)
+    background = (0, 0, 0, 0) if transparent else theme.bg
+    image = Image.new("RGBA" if transparent else "RGB", (max(1, width), max(1, height)), background)
     draw = ImageDraw.Draw(image, "RGBA")
 
     offset_x = MARGIN * scale
@@ -45,23 +86,24 @@ def render_png(layout: Layout, path: str, theme: Theme = LIGHT, scale: int = 2) 
     def sy(value: float) -> float:
         return offset_y + value * scale
 
-    for placed in layout.nodes:
-        for child in placed.children:
-            points = bezier_points(
-                sx(placed.box.right),
-                sy(placed.box.center_y),
-                sx(child.box.left),
-                sy(child.box.center_y),
-            )
-            draw.line(
-                points,
-                fill=theme.edge_color(child.accent, placed.depth),
-                width=max(1, int((2.4 if placed.depth == 0 else 1.8) * scale)),
-                joint="curve",
-            )
+    for edge in layout.edges:
+        points = [(sx(x), sy(y)) for x, y in _pairs(edge.points)]
+        if len(points) < 2:
+            continue
+        color = theme.edge_paint(edge)
+        draw.line(
+            points,
+            fill=color,
+            width=max(1, int(round(edge.width * scale))),
+            joint="curve",
+        )
+        if edge.arrow:
+            head = arrow_head(edge.points, max(7.0, edge.width * 5.2))
+            if head:
+                draw.polygon([(sx(x), sy(y)) for x, y in head], fill=color)
 
     for placed in layout.nodes:
-        _draw_node(draw, placed, theme, layout.config, scale, sx, sy)
+        _draw_node_png(draw, placed, theme, scale, sx, sy)
 
     image = image.resize((int(width / scale), int(height / scale)), Image.LANCZOS)
     directory = os.path.dirname(os.path.abspath(path))
@@ -71,43 +113,46 @@ def render_png(layout: Layout, path: str, theme: Theme = LIGHT, scale: int = 2) 
     return path
 
 
-def _draw_node(
+def _draw_node_png(
     draw: ImageDraw.ImageDraw,
     placed: Placed,
     theme: Theme,
-    config: LayoutConfig,
     scale: int,
     sx,
     sy,
 ) -> None:
     box = placed.box
-    fill, text_color, border, border_width = theme.node_style(placed.depth, placed.accent)
+    fill, text_color, border, border_width = theme.paint(placed)
     left, top = sx(box.left), sy(box.top)
     right, bottom = sx(box.right), sy(box.bottom)
-    radius = min(box.height / 2, config.radius) * scale
 
-    if placed.depth <= 1:
+    if placed.shape == "dot":
+        draw.ellipse([left, top, right, bottom], fill=fill)
+        return
+
+    if placed.shape == "box":
+        radius = min(box.height / 2, 10) * scale
+        if placed.depth <= 1:
+            draw.rounded_rectangle(
+                [left + 1.5 * scale, top + 2.5 * scale, right + 1.5 * scale, bottom + 3 * scale],
+                radius=radius,
+                fill="#00000022" if not theme.dark else "#00000066",
+            )
         draw.rounded_rectangle(
-            [left + 1.5 * scale, top + 2.5 * scale, right + 1.5 * scale, bottom + 3 * scale],
+            [left, top, right, bottom],
             radius=radius,
-            fill="#00000022" if not theme.dark else "#00000066",
+            fill=fill,
+            outline=border if border_width > 0 else None,
+            width=max(1, int(border_width * scale)) if border_width > 0 else 0,
         )
 
-    draw.rounded_rectangle(
-        [left, top, right, bottom],
-        radius=radius,
-        fill=fill,
-        outline=border if border_width > 0 else None,
-        width=max(1, int(border_width * scale)) if border_width > 0 else 0,
-    )
-
-    font = load_font(int(box.font_size * scale))
-    line_height = box.font_size * config.line_spacing * scale
-    text_x = left + config.pad_x * scale
+    font = load_font(int(box.font_size * scale), bold=placed.shape == "box" and placed.depth == 0)
+    text_x = left + box.pad_x * scale
+    line_height = box.line_spacing * box.font_size * scale
     for index, line in enumerate(box.lines):
         if not line:
             continue
-        center_y = top + config.pad_y * scale + line_height * (index + 0.5)
+        center_y = top + box.pad_y * scale + line_height * (index + 0.5)
         draw.text((text_x, center_y), line, font=font, fill=text_color, anchor="lm")
 
 
@@ -138,45 +183,63 @@ def svg_document(layout: Layout, theme: Theme = LIGHT, padding: int = MARGIN) ->
     parts.append(f'<rect width="{width:.2f}" height="{height:.2f}" fill="{theme.bg}"/>')
     parts.append(f'<g transform="translate({padding},{padding})">')
 
-    for placed in layout.nodes:
-        for child in placed.children:
-            line = bezier_points(
-                placed.box.right, placed.box.center_y, child.box.left, child.box.center_y
-            )
-            d = f"M{line[0]:.2f},{line[1]:.2f}"
-            for index in range(2, len(line), 2):
-                d += f" L{line[index]:.2f},{line[index + 1]:.2f}"
-            stroke = theme.edge_color(child.accent, placed.depth)
-            line_width = 2.4 if placed.depth == 0 else 1.8
-            parts.append(
-                f'<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{line_width}" '
-                f'stroke-linecap="round"/>'
-            )
+    for edge in layout.edges:
+        pairs = _pairs(edge.points)
+        if len(pairs) < 2:
+            continue
+        stroke = theme.edge_paint(edge)
+        d = "M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in pairs)
+        parts.append(
+            f'<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{edge.width:.2f}" '
+            f'stroke-linecap="round" stroke-linejoin="round"/>'
+        )
+        if edge.arrow:
+            head = arrow_head(edge.points, max(7.0, edge.width * 5.2))
+            if head:
+                points = " ".join(f"{x:.2f},{y:.2f}" for x, y in head)
+                parts.append(f'<polygon points="{points}" fill="{stroke}"/>')
 
     for placed in layout.nodes:
-        box = placed.box
-        fill, text_color, border, border_width = theme.node_style(placed.depth, placed.accent)
-        radius = min(box.height / 2, layout.config.radius)
-        stroke = (
-            f' stroke="{border}" stroke-width="{border_width}"' if border_width > 0 else ""
-        )
-        parts.append(
-            f'<rect x="{box.left:.2f}" y="{box.top:.2f}" width="{box.width:.2f}" '
-            f'height="{box.height:.2f}" rx="{radius:.2f}" fill="{fill}"{stroke}/>'
-        )
-        line_height = box.font_size * layout.config.line_spacing
-        for index, line in enumerate(box.lines):
-            if not line:
-                continue
-            center_y = box.top + layout.config.pad_y + line_height * (index + 0.5)
-            parts.append(
-                f'<text x="{box.left + layout.config.pad_x:.2f}" y="{center_y:.2f}" '
-                f'fill="{text_color}" font-size="{box.font_size}" '
-                f'dominant-baseline="central" xml:space="preserve">{_escape(line)}</text>'
-            )
+        parts.append(_node_svg(placed, theme))
 
     parts.append("</g></svg>")
     return "".join(parts)
+
+
+def _node_svg(placed: Placed, theme: Theme) -> str:
+    box = placed.box
+    fill, text_color, border, border_width = theme.paint(placed)
+    chunks: List[str] = []
+
+    if placed.shape == "dot":
+        radius = min(box.width, box.height) / 2
+        chunks.append(
+            f'<circle cx="{box.center_x:.2f}" cy="{box.center_y:.2f}" r="{radius:.2f}" '
+            f'fill="{fill}"/>'
+        )
+    elif placed.shape == "box":
+        radius = min(box.height / 2, 10)
+        stroke = f' stroke="{border}" stroke-width="{border_width}"' if border_width > 0 else ""
+        chunks.append(
+            f'<rect x="{box.left:.2f}" y="{box.top:.2f}" width="{box.width:.2f}" '
+            f'height="{box.height:.2f}" rx="{radius:.2f}" fill="{fill}"{stroke}/>'
+        )
+
+    if placed.shape == "dot":
+        return "".join(chunks)
+
+    line_height = box.line_spacing * box.font_size
+    for index, line in enumerate(box.lines):
+        if not line:
+            continue
+        center_y = box.top + box.pad_y + line_height * (index + 0.5)
+        weight = ' font-weight="600"' if placed.depth == 0 and placed.shape == "box" else ""
+        chunks.append(
+            f'<text x="{box.left + box.pad_x:.2f}" y="{center_y:.2f}" fill="{text_color}" '
+            f'font-size="{box.font_size}"{weight} dominant-baseline="central" '
+            f'xml:space="preserve">{_escape(line)}</text>'
+        )
+    return "".join(chunks)
 
 
 def render_svg(layout: Layout, path: str, theme: Theme = LIGHT) -> str:
@@ -198,7 +261,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{title} · 思维导图</title>
+<title>{title} · {kind_label}</title>
 <style>
   :root {{ color-scheme: {scheme}; }}
   * {{ box-sizing: border-box; }}
@@ -234,7 +297,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   <button id="download">下载 SVG</button>
 </header>
 <main id="viewport"><div id="stage">{svg}</div></main>
-<footer>{count} 个节点 · 滚轮缩放 · 拖拽平移</footer>
+<footer>{count} 个节点 · {kind_label} · 滚轮缩放 · 拖拽平移</footer>
 <script>
 (function () {{
   var viewport = document.getElementById('viewport');
@@ -302,14 +365,22 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
-def html_document(layout: Layout, theme: Theme = LIGHT, title: str = "思维导图") -> str:
+def html_document(
+    layout: Layout,
+    theme: Theme = LIGHT,
+    title: str = "思维导图",
+    kind_label: str = "",
+) -> str:
     """生成自带缩放/平移/下载的独立 HTML。"""
+    from .diagrams import DIAGRAM_LABELS
+
     svg = svg_document(layout, theme)
     filename = os.path.splitext(os.path.basename(title))[0] or "mindmap"
     return _HTML_TEMPLATE.format(
         title=_escape(title),
         svg=svg,
         count=len(layout.nodes),
+        kind_label=kind_label or DIAGRAM_LABELS.get(layout.kind, "思维导图"),
         bg=theme.bg,
         ink=theme.ink,
         muted=theme.muted,

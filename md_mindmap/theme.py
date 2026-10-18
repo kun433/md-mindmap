@@ -58,6 +58,33 @@ class Theme:
         ratio = 0.42 if depth <= 1 else 0.5
         return mix(accent, self.bg, ratio)
 
+    def paint(self, placed) -> Tuple[str, str, str, float]:
+        """按节点形状返回 (填充, 文字, 边框, 边框粗细)。
+
+        ``shape == "text"`` 用量为空填充、无边框；``shape == "dot"`` 为实心圆点。
+        """
+        shape = getattr(placed, "shape", "box")
+        tone = getattr(placed, "tone", "normal")
+        accent = placed.accent
+        if shape == "dot":
+            return accent, "#FFFFFF", accent, 0.0
+        if shape == "text":
+            if tone == "accent":
+                color = mix(accent, self.ink, 0.1) if not self.dark else mix(accent, "#FFFFFF", 0.72)
+            elif tone == "muted":
+                color = self.muted
+            else:
+                color = mix(self.ink, self.bg, 0.15)
+            return "", color, "", 0.0
+        return self.node_style(placed.depth, accent)
+
+    def edge_paint(self, edge) -> str:
+        """连线的最终颜色：主干最深，越细的分支越淡。"""
+        if getattr(edge, "muted", False):
+            return mix(self.ink, self.bg, 0.66)
+        ratio = {0: 0.18, 1: 0.34}.get(getattr(edge, "level", 2), 0.52)
+        return mix(edge.color, self.bg, ratio)
+
     def root_shadow(self) -> str:
         """Tk 画布只支持不带透明通道的颜色值。"""
         return "#DCDCD6" if not self.dark else "#0A0B0E"

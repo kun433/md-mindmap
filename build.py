@@ -70,20 +70,30 @@ def main() -> int:
 
     preview_dir = os.path.join(BASE, "docs")
     os.makedirs(preview_dir, exist_ok=True)
-    sample = os.path.join(BASE, "samples", "示例-项目发布计划.md")
-    if os.path.exists(sample):
+    previews = [
+        ("示例-项目发布计划.md", "auto", "preview"),
+        ("示例-鱼骨图-成绩下滑分析.md", "fishbone", "preview-fishbone"),
+        ("示例-时间轴-项目里程碑.md", "timeline", "preview-timeline"),
+        ("示例-组织结构图-学生会.md", "org", "preview-org"),
+    ]
+    for name, diagram, target in previews:
+        sample = os.path.join(BASE, "samples", name)
+        if not os.path.exists(sample):
+            continue
         run(
             [
                 sys.executable,
                 "main.py",
                 sample,
+                "--diagram",
+                diagram,
                 "--formats",
                 "png",
                 "-o",
-                os.path.join(preview_dir, "preview"),
+                os.path.join(preview_dir, target),
             ]
         )
-    print(f"预览图：{os.path.join(preview_dir, 'preview.png')}")
+    print(f"预览图目录：{preview_dir}")
     return 0
 
 

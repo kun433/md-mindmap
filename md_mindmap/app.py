@@ -1,4 +1,4 @@
-"""Tkinter 图形界面：左侧编辑 Markdown，右侧实时查看思维导图。"""
+"""Tkinter 图形界面：左侧编辑 Markdown，右侧实时查看图形。"""
 
 from __future__ import annotations
 
@@ -10,33 +10,17 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 from typing import Dict, List, Optional
 
 from . import __version__
-from .exporter import export_all, html_document, render_png, render_svg
+from .diagrams import DIAGRAM_KINDS, DIAGRAM_LABELS, build_diagram
+from .exporter import arrow_head, export_all, html_document, render_png, render_svg
 from .fonts import tk_font_family
-from .layout import Layout, LayoutConfig, Placed, bezier_points, build_layout
-from .parser import Node, parse_markdown
-from .theme import DARK, LIGHT, THEMES, Theme
+from .layout import Layout, LayoutConfig, Placed
+from .parser import Node, parse_document
+from .templates import template_for
+from .theme import LIGHT, THEMES, Theme
 
-APP_NAME = "Markdown 思维导图"
-SAMPLE_MD = """# 学习计划思维导图
-
-## 目标
-- 提升数学成绩
-  - 每天完成 10 道计算题
-  - 每周整理一次错题本
-- 英语词汇量突破 3500
-  - 每天背 30 个新词
-  - 复习前一天内容
-
-## 时间安排
-- 早上 6:40 - 7:10 背单词
-- 晚上 19:30 - 21:00 作业与复习
-- 周末 2 小时自由阅读
-
-## 检查方式
-- [x] 每日打卡记录
-- [ ] 周末自测
-- [ ] 每月复盘一次
-"""
+APP_NAME = "Markdown 图形工坊"
+SAMPLE_MD = template_for("mindmap")[1]
+AUTO_LABEL = "自动识别"
 
 
 def resource_path(relative: str) -> str:
@@ -53,6 +37,7 @@ class MindMapApp:
         root: tk.Tk,
         initial_path: Optional[str] = None,
         initial_text: Optional[str] = None,
+        initial_kind: str = "auto",
     ) -> None:
         self.root = root
         self.md_path: Optional[str] = None
@@ -64,16 +49,18 @@ class MindMapApp:
         self.offset_y = 40.0
         self._drag_origin: Optional[tuple[int, int]] = None
         self._drag_moved = False
-        self._node_fonts: Dict[int, "tkfont.Font"] = {}
+        self._node_fonts: Dict[tuple[int, bool], "tkfont.Font"] = {}
         self._update_job: Optional[str] = None
         self._pending_render = True
         self.family = tk_font_family()
+        self.kind = "mindmap"
 
         root.title(f"{APP_NAME} v{__version__}")
         root.geometry("1280x800")
         root.minsize(900, 560)
         self._set_icon()
         self._build_style()
+        self.diagram_var = tk.StringVar(value=self._label_for(initial_kind))
         self._build_menu()
         self._build_widgets()
         self._bind_events()
@@ -107,6 +94,20 @@ class MindMapApp:
         style.configure("TCheckbutton", background="#F6F6F3", font=(self.family, 10))
         style.configure("TLabel", background="#F6F6F3", font=(self.family, 10))
         style.configure("Hint.TLabel", foreground="#6B7280", font=(self.family, 9))
+        style.configure("TCombobox", font=(self.family, 10))
+
+    @staticmethod
+    def _label_for(kind: str) -> str:
+        return AUTO_LABEL if kind == "auto" else DIAGRAM_LABELS.get(kind, AUTO_LABEL)
+
+    @staticmethod
+    def _kind_for(label: str) -> str:
+        if label == AUTO_LABEL:
+            return "auto"
+        for kind, text in DIAGRAM_LABELS.items():
+            if text == label:
+                return kind
+        return "auto"
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root, tearoff=0)
@@ -116,12 +117,33 @@ class MindMapApp:
         file_menu.add_command(label="粘贴剪贴板内容", accelerator="Ctrl+V", command=self.paste_clipboard)
         file_menu.add_separator()
         file_menu.add_command(label="导出 PNG…", accelerator="Ctrl+S", command=lambda: self.export("png"))
+        file_menu.add_command(label="导出 PNG（透明背景）…", command=lambda: self.export("png-transparent"))
         file_menu.add_command(label="导出 SVG…", command=lambda: self.export("svg"))
         file_menu.add_command(label="导出 HTML…", command=lambda: self.export("html"))
         file_menu.add_command(label="导出全部格式…", command=lambda: self.export("all"))
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.root.destroy)
         menubar.add_cascade(label="文件", menu=file_menu)
+
+        diagram_menu = tk.Menu(menubar, tearoff=0)
+        diagram_menu.add_command(label=AUTO_LABEL, accelerator="Ctrl+1", command=lambda: self.set_diagram("auto"))
+        diagram_menu.add_separator()
+        for index, kind in enumerate(DIAGRAM_KINDS):
+            diagram_menu.add_command(
+                label=DIAGRAM_LABELS[kind],
+                accelerator=f"Ctrl+{index + 2}",
+                command=lambda k=kind: self.set_diagram(k),
+            )
+        diagram_menu.add_separator()
+        sample_menu = tk.Menu(diagram_menu, tearoff=0)
+        for kind in DIAGRAM_KINDS:
+            title, _text = template_for(kind)
+            sample_menu.add_command(
+                label=f"{DIAGRAM_LABELS[kind]}示例 · {title}",
+                command=lambda k=kind: self.load_template(k),
+            )
+        diagram_menu.add_cascade(label="载入示例模板", menu=sample_menu)
+        menubar.add_cascade(label="图形", menu=diagram_menu)
 
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(label="适应窗口", accelerator="F", command=lambda: self.fit_view())
@@ -153,8 +175,19 @@ class MindMapApp:
         ttk.Button(toolbar, text="打开 Markdown", command=self.open_file).pack(side="left")
         ttk.Button(toolbar, text="重新生成", command=lambda: self.refresh(fit=True)).pack(side="left", padx=6)
         ttk.Button(toolbar, text="适应窗口", command=lambda: self.fit_view()).pack(side="left")
-        ttk.Label(toolbar, text="  ").pack(side="left")
 
+        ttk.Label(toolbar, text="   图形").pack(side="left")
+        self.diagram_box = ttk.Combobox(
+            toolbar,
+            textvariable=self.diagram_var,
+            values=[AUTO_LABEL] + [DIAGRAM_LABELS[kind] for kind in DIAGRAM_KINDS],
+            state="readonly",
+            width=10,
+        )
+        self.diagram_box.pack(side="left", padx=(4, 0))
+        self.diagram_box.bind("<<ComboboxSelected>>", self._on_diagram_change)
+
+        ttk.Label(toolbar, text="  ").pack(side="left")
         self.auto_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             toolbar, text="自动刷新", variable=self.auto_var, command=self._schedule_update
@@ -166,6 +199,7 @@ class MindMapApp:
 
         ttk.Button(toolbar, text="导出", command=lambda: self.export("all")).pack(side="right")
         ttk.Button(toolbar, text="深色", command=self.toggle_theme).pack(side="right", padx=6)
+        ttk.Button(toolbar, text="示例", command=self.load_template_cycle).pack(side="right")
 
         self.paned = ttk.PanedWindow(self.root, orient="horizontal")
         self.paned.pack(fill="both", expand=True, padx=12, pady=(0, 8))
@@ -230,6 +264,12 @@ class MindMapApp:
         self.root.bind("<plus>", lambda e: self._key_zoom(1.15))
         self.root.bind("<equal>", lambda e: self._key_zoom(1.15))
         self.root.bind("<minus>", lambda e: self._key_zoom(1 / 1.15))
+        self.root.bind("<Control-Key-1>", lambda e: self.set_diagram("auto"))
+        for index, kind in enumerate(DIAGRAM_KINDS):
+            self.root.bind(
+                f"<Control-Key-{index + 2}>",
+                lambda e, k=kind: self.set_diagram(k),
+            )
 
     def _editor_focused(self) -> bool:
         try:
@@ -268,32 +308,71 @@ class MindMapApp:
         if self.md_path:
             return os.path.splitext(os.path.basename(self.md_path))[0]
         first = self.editor.get("1.0", "2.0").strip().lstrip("#").strip()
-        return first or "思维导图"
+        return first or "未命名图形"
 
-    def _parse(self) -> Node:
+    def selected_kind(self) -> str:
+        return self._kind_for(self.diagram_var.get())
+
+    def _parse(self):
         text = self.editor.get("1.0", "end")
-        return parse_markdown(text, title=self.current_title(), prefer_mermaid=self.mermaid_var.get())
+        return parse_document(
+            text,
+            title=self.current_title(),
+            prefer_mermaid=self.mermaid_var.get(),
+            diagram=self.selected_kind(),
+        )
 
     def refresh(self, fit: bool = False) -> None:
         """重新解析并重绘。"""
-        tree = self._parse()
-        self.tree = tree
-        self.layout = build_layout(tree, LayoutConfig())
+        document = self._parse()
+        self.tree = document.root
+        self.kind = document.kind
+        self.layout = build_diagram(self.tree, self.kind, LayoutConfig())
         if fit:
             self.fit_view(redraw=False)
         self.redraw()
-        nodes = sum(1 for _ in tree.walk())
+        nodes = sum(1 for _ in self.tree.walk())
         label = os.path.basename(self.md_path) if self.md_path else "未保存文档"
-        self.status_var.set(f"{label} · {nodes} 个节点 · 点击节点可折叠/展开")
+        self.status_var.set(
+            f"{label} · {DIAGRAM_LABELS.get(self.kind, '图形')} · {nodes} 个节点 · 点击节点可折叠/展开"
+        )
+
+    def set_diagram(self, kind: str) -> None:
+        self.diagram_var.set(self._label_for(kind))
+        self.refresh(fit=True)
+
+    def _on_diagram_change(self, _event=None) -> None:
+        self.refresh(fit=True)
+
+    def load_template(self, kind: str) -> None:
+        """把内置示例载入编辑器。"""
+        title, text = template_for(kind)
+        self.md_path = None
+        self.editor.delete("1.0", "end")
+        self.editor.insert("1.0", text)
+        self.editor.edit_modified(False)
+        self.diagram_var.set(DIAGRAM_LABELS.get(kind, AUTO_LABEL))
+        self.refresh(fit=True)
+        self.status_var.set(f"已载入{DIAGRAM_LABELS.get(kind, '')}示例 · {title}")
+
+    def load_template_cycle(self) -> None:
+        """工具栏「示例」按钮：依次切换四种图形的示例。"""
+        order = list(DIAGRAM_KINDS)
+        current = self.selected_kind()
+        index = order.index(current) + 1 if current in order else 0
+        self.load_template(order[index % len(order)])
 
     # ------------------------------------------------------------------ #
     # 绘制
     # ------------------------------------------------------------------ #
-    def _font(self, size: int) -> "tkfont.Font":
+    def _font(self, size: int, bold: bool = False) -> "tkfont.Font":
         size = max(8, int(size))
-        if size not in self._node_fonts:
-            self._node_fonts[size] = tkfont.Font(family=self.family, size=size)
-        return self._node_fonts[size]
+        key = (size, bold)
+        if key not in self._node_fonts:
+            self._node_fonts[key] = tkfont.Font(
+                family=self.family, size=size, weight="bold" if bold else "normal"
+            )
+        return self._node_fonts[key]
 
     def _to_screen(self, x: float, y: float) -> tuple[float, float]:
         return x * self.scale + self.offset_x, y * self.scale + self.offset_y
@@ -312,58 +391,70 @@ class MindMapApp:
         if not self.layout:
             return
 
-        for placed in self.layout.nodes:
-            for child in placed.children:
-                points = bezier_points(
-                    placed.box.right, placed.box.center_y, child.box.left, child.box.center_y
-                )
-                screen: List[float] = []
-                for index in range(0, len(points), 2):
-                    sx, sy = self._to_screen(points[index], points[index + 1])
-                    screen.extend((sx, sy))
-                self.canvas.create_line(
-                    *screen,
-                    fill=self.theme.edge_color(child.accent, placed.depth),
-                    width=max(1.0, (2.4 if placed.depth == 0 else 1.8) * self.scale),
-                    smooth=False,
-                    capstyle="round",
-                )
+        for edge in self.layout.edges:
+            screen: List[float] = []
+            for index in range(0, len(edge.points) - 1, 2):
+                sx, sy = self._to_screen(edge.points[index], edge.points[index + 1])
+                screen.extend((sx, sy))
+            if len(screen) < 4:
+                continue
+            color = self.theme.edge_paint(edge)
+            self.canvas.create_line(
+                *screen,
+                fill=color,
+                width=max(1.0, edge.width * self.scale),
+                smooth=False,
+                capstyle="round",
+                joinstyle="round",
+            )
+            if edge.arrow:
+                head = arrow_head(edge.points, max(7.0, edge.width * 5.2))
+                if head:
+                    points: List[float] = []
+                    for hx, hy in head:
+                        px, py = self._to_screen(hx, hy)
+                        points.extend((px, py))
+                    self.canvas.create_polygon(points, fill=color, outline="")
 
         for placed in self.layout.nodes:
             self._draw_node(placed)
 
     def _draw_node(self, placed: Placed) -> None:
         box = placed.box
-        fill, text_color, border, border_width = self.theme.node_style(placed.depth, placed.accent)
+        fill, text_color, border, border_width = self.theme.paint(placed)
         x1, y1 = self._to_screen(box.left, box.top)
         x2, y2 = self._to_screen(box.right, box.bottom)
-        radius = min((y2 - y1) / 2, max(3.0, (box.height / 2) * self.scale))
         tag = f"n{id(placed)}"
 
-        if placed.depth <= 1:
-            shadow = self.theme.root_shadow()
+        if placed.shape == "dot":
+            self.canvas.create_oval(x1, y1, x2, y2, fill=fill, outline="", tags=tag)
+            return
+
+        if placed.shape == "box":
+            radius = min((y2 - y1) / 2, max(3.0, 10 * self.scale))
+            if placed.depth <= 1:
+                shadow = self.theme.root_shadow()
+                self.canvas.create_polygon(
+                    self._rounded(x1 + 1.5, y1 + 2.5, x2 + 1.5, y2 + 3, radius),
+                    fill=shadow,
+                    outline="",
+                    tags=tag,
+                )
             self.canvas.create_polygon(
-                self._rounded(x1 + 1.5, y1 + 2.5, x2 + 1.5, y2 + 3, radius),
-                fill=shadow,
-                outline="",
+                self._rounded(x1, y1, x2, y2, radius),
+                fill=fill,
+                outline=border if border_width > 0 else fill,
+                width=max(1.0, border_width * self.scale),
                 tags=tag,
             )
 
-        self.canvas.create_polygon(
-            self._rounded(x1, y1, x2, y2, radius),
-            fill=fill,
-            outline=border if border_width > 0 else fill,
-            width=max(1.0, border_width * self.scale),
-            tags=tag,
-        )
-
-        font = self._font(box.font_size * self.scale)
-        line_height = box.font_size * 1.42 * self.scale
-        text_x = x1 + 15 * self.scale
+        font = self._font(box.font_size * self.scale, bold=placed.depth == 0)
+        line_height = box.line_spacing * box.font_size * self.scale
+        text_x = x1 + box.pad_x * self.scale
         for index, line in enumerate(box.lines):
             if not line:
                 continue
-            center_y = y1 + 9 * self.scale + line_height * (index + 0.5)
+            center_y = y1 + box.pad_y * self.scale + line_height * (index + 0.5)
             self.canvas.create_text(
                 text_x,
                 center_y,
@@ -374,7 +465,11 @@ class MindMapApp:
                 tags=tag,
             )
 
-        if placed.node.children and placed.node.collapsed:
+        if (
+            placed.shape == "box"
+            and placed.node.children
+            and placed.node.collapsed
+        ):
             cx, cy = x2 + 11 * self.scale, (y1 + y2) / 2
             r = max(5.0, 7 * self.scale)
             self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=placed.accent, outline="", tags=tag)
@@ -401,7 +496,7 @@ class MindMapApp:
         ]
         for cx, cy, start, end in corners:
             for step in range(7):
-                angle = (start + (end - start) * step / 6) * 3.141592653589793 / 180
+                angle = (start + (end - start) * step / 6) * math.pi / 180
                 points.extend((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
         return points
 
@@ -418,7 +513,10 @@ class MindMapApp:
             return None
         lx = (x - self.offset_x) / self.scale
         ly = (y - self.offset_y) / self.scale
-        return self.layout.hit_test(lx, ly)
+        placed = self.layout.hit_test(lx, ly)
+        if placed is not None and not placed.interactive:
+            return None
+        return placed
 
     def _on_press(self, event) -> None:
         self._drag_origin = (event.x, event.y)
@@ -441,7 +539,7 @@ class MindMapApp:
             placed = self._hit(event.x, event.y)
             if placed is not None and placed.node.children and self.tree is not None:
                 placed.node.collapsed = not placed.node.collapsed
-                self.layout = build_layout(self.tree, LayoutConfig())
+                self.layout = build_diagram(self.tree, self.kind, LayoutConfig())
                 self.redraw()
         self._drag_origin = None
 
@@ -481,7 +579,7 @@ class MindMapApp:
     def _rebuild_from_tree(self) -> bool:
         if self.tree is None:
             return False
-        self.layout = build_layout(self.tree, LayoutConfig())
+        self.layout = build_diagram(self.tree, self.kind, LayoutConfig())
         self.redraw()
         return True
 
@@ -576,7 +674,7 @@ class MindMapApp:
             self.status_var.set("已导出：" + "、".join(os.path.basename(p) for p in outputs))
             return
 
-        extension = {"png": ".png", "svg": ".svg", "html": ".html"}[kind]
+        extension = {"png": ".png", "png-transparent": ".png", "svg": ".svg", "html": ".html"}[kind]
         path = filedialog.asksaveasfilename(
             title=f"导出 {kind.upper()}",
             defaultextension=extension,
@@ -585,13 +683,14 @@ class MindMapApp:
         )
         if not path:
             return
-        if kind == "png":
-            render_png(self.layout, path, self.theme)
+        if kind in ("png", "png-transparent"):
+            render_png(self.layout, path, self.theme, transparent=kind == "png-transparent")
         elif kind == "svg":
             render_svg(self.layout, path, self.theme)
         else:
+            label = DIAGRAM_LABELS.get(self.kind, "图形")
             with open(path, "w", encoding="utf-8") as handle:
-                handle.write(html_document(self.layout, self.theme, title=base))
+                handle.write(html_document(self.layout, self.theme, title=base, kind_label=label))
         self.status_var.set(f"已导出 {os.path.basename(path)}")
 
     # ------------------------------------------------------------------ #
@@ -600,30 +699,33 @@ class MindMapApp:
     def show_help(self) -> None:
         messagebox.showinfo(
             "使用说明",
-            "1. 左侧粘贴或打开 Markdown，右侧自动生成思维导图\n"
-            "2. 点击有子节点的节点可以折叠 / 展开\n"
-            "3. 滚轮缩放，按住左键拖拽平移，F 键适应窗口\n"
-            "4. 文档里的 ```mermaid mindmap 代码块会被优先解析\n"
-            "5. 首次导入会询问是否附加初始要点（可选）",
+            "1. 左侧粘贴或打开 Markdown，右侧自动生成图形\n"
+            "2. 顶部「图形」下拉框可切换：自动识别 / 思维导图 / 鱼骨图 / 时间轴 / 组织结构图\n"
+            "3. 鱼骨图：根节点是结果，一级要点是主因，更深层是子因\n"
+            "4. 时间轴：一级要点写成「2024-03 事件名」，日期会自动拆成徽章\n"
+            "5. 点击有子节点的节点可以折叠 / 展开，滚轮缩放，拖拽平移，F 键适应窗口\n"
+            "6. 快捷键 Ctrl+1 自动、Ctrl+2~5 切换四种图形，Ctrl+W 折叠到二级",
         )
 
     def show_about(self) -> None:
         messagebox.showinfo(
             "关于",
             f"{APP_NAME} v{__version__}\n\n"
-            "把 Markdown 大纲转成可交互思维导图。\n"
-            "支持标题、列表、引用、段落与 mermaid mindmap 语法，\n"
+            "把 Markdown 大纲转成思维导图、鱼骨图、时间轴与组织结构图。\n"
+            "支持标题、列表、引用、段落与 mermaid mindmap / timeline 语法，\n"
             "可导出 PNG / SVG / HTML。",
         )
 
 
-
-def launch(path: Optional[str] = None) -> None:
+def launch(path: Optional[str] = None, kind: str = "auto") -> None:
     """启动图形界面。"""
     root = tk.Tk()
     try:
         root.call("tk", "scaling", 1.2)
     except tk.TclError:
         pass
-    MindMapApp(root, initial_path=path)
+    initial_text = None
+    if not path:
+        initial_text = SAMPLE_MD
+    MindMapApp(root, initial_path=path, initial_text=initial_text, initial_kind=kind)
     root.mainloop()

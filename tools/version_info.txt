@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 1, 0, 0),
+    prodvers=(1, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,13 +16,13 @@ VSVersionInfo(
           '080404B0',
           [
             StringStruct('CompanyName', 'md-mindmap'),
-            StringStruct('FileDescription', 'Markdown 思维导图生成器（可导出 PNG / SVG / HTML）'),
-            StringStruct('FileVersion', '1.0.0.0'),
+            StringStruct('FileDescription', 'Markdown 思维导图 / 鱼骨图 / 时间轴 / 组织结构图生成器'),
+            StringStruct('FileVersion', '1.1.0.0'),
             StringStruct('InternalName', 'MdMindMap'),
             StringStruct('LegalCopyright', 'MIT License'),
             StringStruct('OriginalFilename', 'MdMindMap.exe'),
             StringStruct('ProductName', 'Markdown 思维导图'),
-            StringStruct('ProductVersion', '1.0.0.0')
+            StringStruct('ProductVersion', '1.1.0.0')
           ]
         )
       ]

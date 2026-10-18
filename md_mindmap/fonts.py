@@ -20,6 +20,11 @@ _WINDOWS_FONTS = [
     r"C:\Windows\Fonts\arial.ttf",
 ]
 
+_WINDOWS_BOLD_FONTS = [
+    r"C:\Windows\Fonts\msyhbd.ttc",  # 微软雅黑 Bold
+    r"C:\Windows\Fonts\simhei.ttf",  # 黑体（本身较粗）
+]
+
 _TK_CANDIDATES = ["Microsoft YaHei UI", "Microsoft YaHei", "微软雅黑", "SimHei", "SimSun"]
 
 
@@ -35,10 +40,11 @@ def _bundled_truetype() -> Optional[str]:
     return None
 
 
-@lru_cache(maxsize=1)
-def resolve_font_path() -> str:
+@lru_cache(maxsize=2)
+def resolve_font_path(bold: bool = False) -> str:
     """返回可用的字体文件路径，找不到时回退到 Pillow 自带字体。"""
-    for path in _WINDOWS_FONTS:
+    candidates = _WINDOWS_BOLD_FONTS if bold else []
+    for path in candidates + _WINDOWS_FONTS:
         if os.path.exists(path):
             return path
     bundled = _bundled_truetype()
@@ -47,11 +53,11 @@ def resolve_font_path() -> str:
     return ""
 
 
-@lru_cache(maxsize=64)
-def load_font(size: int) -> ImageFont.FreeTypeFont:
-    """按字号加载字体（带缓存）。"""
+@lru_cache(maxsize=128)
+def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    """按字号加载字体（带缓存），bold 为真时优先使用粗体字形。"""
     size = max(6, int(size))
-    path = resolve_font_path()
+    path = resolve_font_path(bold)
     if path:
         try:
             return ImageFont.truetype(path, size)

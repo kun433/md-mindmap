@@ -20,11 +20,12 @@ from typing import Any, Dict, Optional, Tuple
 API = "https://api.github.com"
 UPLOADS = "https://uploads.github.com"
 REPO = os.environ.get("GH_REPO", "kun433/md-mindmap")
-TAG = os.environ.get("GH_TAG", "v1.0.0")
-RELEASE_NAME = os.environ.get("GH_RELEASE_NAME", "Markdown 思维导图 v1.0.0")
+TAG = os.environ.get("GH_TAG", "v1.1.0")
+RELEASE_NAME = os.environ.get("GH_RELEASE_NAME", "Markdown 图形工坊 v1.1.0")
 NOTES = os.environ.get(
     "GH_RELEASE_NOTES",
-    "首个版本：Markdown / mermaid 解析、实时预览、PNG / SVG / HTML 导出。",
+    "新增鱼骨图、时间轴、组织结构图，支持自动识别图形类型、mermaid timeline、"
+    "界面图形切换与示例模板，导出支持透明背景 PNG。",
 )
 
 

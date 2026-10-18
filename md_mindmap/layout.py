@@ -1,4 +1,13 @@
-"""把节点树排成经典思维导图布局（右向树、父节点垂直居中于子树）。"""
+"""通用图形场景模型与思维导图布局。
+
+所有图形（思维导图、鱼骨图、时间轴、组织结构图）最终都归结为同一份场景数据：
+
+* ``Layout.nodes`` —— 已经测量好尺寸的文本框（可以画成圆角矩形、圆点或纯文字）；
+* ``Layout.edges`` —— 折线连接（可选箭头），坐标已经是最终画布坐标。
+
+这样 PNG / SVG / Tk / HTML 四套渲染只需要实现一遍「画折线 + 画节点」，
+新增图形时只写布局，不用再改渲染代码。
+"""
 
 from __future__ import annotations
 
@@ -14,9 +23,12 @@ from .parser import Node
 __all__ = [
     "ACCENTS",
     "Box",
+    "Edge",
     "Layout",
     "LayoutConfig",
+    "Measurer",
     "Placed",
+    "bezier_points",
     "build_layout",
     "node_edges",
     "wrap_text",
@@ -74,6 +86,9 @@ class Box:
     height: float
     lines: List[str]
     font_size: int
+    pad_x: float = 15.0
+    pad_y: float = 9.0
+    line_spacing: float = 1.42
 
     @property
     def right(self) -> float:
@@ -82,6 +97,10 @@ class Box:
     @property
     def bottom(self) -> float:
         return self.top + self.height
+
+    @property
+    def center_x(self) -> float:
+        return self.left + self.width / 2
 
     @property
     def center_y(self) -> float:
@@ -93,12 +112,33 @@ class Box:
 
 @dataclass
 class Placed:
+    """画布上的一个节点。"""
+
     node: Node
     depth: int
     box: Box
     accent: str
     parent: Optional["Placed"] = None
     children: List["Placed"] = field(default_factory=list)
+    shape: str = "box"  # box | dot | text
+    tone: str = "normal"  # normal | muted | accent
+    interactive: bool = True  # False 时不响应点击折叠
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.box.lines)
+
+
+@dataclass
+class Edge:
+    """一条折线连接（坐标为最终画布坐标，扁平存放 x, y）。"""
+
+    points: List[float]
+    color: str
+    width: float = 1.8
+    arrow: bool = False
+    level: int = 2  # 用于主题配色深浅：0 主干 / 1 主分支 / 2 细线
+    muted: bool = False  # 主轴等辅助线使用柔和色
 
 
 @dataclass
@@ -108,6 +148,8 @@ class Layout:
     width: float
     height: float
     config: LayoutConfig
+    edges: List[Edge] = field(default_factory=list)
+    kind: str = "mindmap"
 
     def hit_test(self, x: float, y: float) -> Optional[Placed]:
         for placed in reversed(self.nodes):
@@ -115,9 +157,20 @@ class Layout:
                 return placed
         return None
 
+    def shift(self, dx: float, dy: float) -> "Layout":
+        """整体平移（包含连线端点）。"""
+        for placed in self.nodes:
+            placed.box.left += dx
+            placed.box.top += dy
+        for edge in self.edges:
+            for index in range(0, len(edge.points), 2):
+                edge.points[index] += dx
+                edge.points[index + 1] += dy
+        return self
+
 
 # --------------------------------------------------------------------------- #
-# 文本换行
+# 文本换行与测量
 # --------------------------------------------------------------------------- #
 
 
@@ -164,8 +217,57 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> List
     return result or [""]
 
 
+class Measurer:
+    """缓存字体、测量文本框尺寸，供各种图形复用。"""
+
+    def __init__(self, config: Optional[LayoutConfig] = None) -> None:
+        self.config = config or LayoutConfig()
+        self._fonts: Dict[int, ImageFont.FreeTypeFont] = {}
+
+    def font(self, size: int) -> ImageFont.FreeTypeFont:
+        size = max(8, int(size))
+        if size not in self._fonts:
+            self._fonts[size] = load_font(size)
+        return self._fonts[size]
+
+    def text_width(self, text: str, size: int) -> float:
+        font = self.font(size)
+        return max((font.getlength(line) for line in text.split("\n")), default=0.0)
+
+    def box(
+        self,
+        text: str,
+        font_size: int,
+        max_width: float,
+        pad_x: Optional[float] = None,
+        pad_y: Optional[float] = None,
+        min_width: float = 0.0,
+        line_spacing: Optional[float] = None,
+    ) -> Box:
+        config = self.config
+        pad_x = config.pad_x if pad_x is None else pad_x
+        pad_y = config.pad_y if pad_y is None else pad_y
+        line_spacing = config.line_spacing if line_spacing is None else line_spacing
+        font = self.font(font_size)
+        lines = wrap_text(text, font, max_width)
+        text_width = max((font.getlength(line) for line in lines), default=0.0)
+        width = max(min_width, text_width + 2 * pad_x)
+        height = len(lines) * line_spacing * font_size + 2 * pad_y
+        return Box(
+            0.0,
+            0.0,
+            width,
+            height,
+            lines,
+            int(font_size),
+            pad_x=float(pad_x),
+            pad_y=float(pad_y),
+            line_spacing=float(line_spacing),
+        )
+
+
 # --------------------------------------------------------------------------- #
-# 布局
+# 思维导图布局（右向树，父节点垂直居中于子树）
 # --------------------------------------------------------------------------- #
 
 
@@ -174,23 +276,20 @@ def build_layout(
     config: Optional[LayoutConfig] = None,
     accents: Optional[List[str]] = None,
 ) -> Layout:
-    """计算整棵树的几何布局。"""
+    """计算整棵树的思维导图几何布局。"""
     config = config or LayoutConfig()
     accents = accents or ACCENTS
+    measurer = Measurer(config)
 
     sizes: Dict[int, Box] = {}
     column_width: Dict[int, float] = {}
 
     def measure(node: Node, depth: int) -> None:
         size = config.font_size_at(depth)
-        font = load_font(size)
         limit = config.root_max_text_width if depth == 0 else config.max_text_width
-        lines = wrap_text(node.text, font, limit)
-        text_width = max((font.getlength(line) for line in lines), default=0.0)
-        width = max(config.min_width, text_width + 2 * config.pad_x)
-        height = len(lines) * config.line_spacing * size + 2 * config.pad_y
-        sizes[id(node)] = Box(0.0, 0.0, width, height, lines, size)
-        column_width[depth] = max(column_width.get(depth, 0.0), width)
+        box = measurer.box(node.text, size, limit, min_width=config.min_width)
+        sizes[id(node)] = box
+        column_width[depth] = max(column_width.get(depth, 0.0), box.width)
         if not node.collapsed:
             for child in node.children:
                 measure(child, depth + 1)
@@ -246,16 +345,45 @@ def build_layout(
     width = max((p.box.right for p in placed_nodes), default=0.0)
     height = max((p.box.bottom for p in placed_nodes), default=0.0)
     min_top = min((p.box.top for p in placed_nodes), default=0.0)
-    if min_top < 0:
-        for placed in placed_nodes:
-            placed.box.top -= min_top
-        height -= min_top
 
-    return Layout(root=root_placed, nodes=placed_nodes, width=width, height=height, config=config)
+    edges: List[Edge] = []
+
+    def collect(placed: Placed) -> None:
+        for child in placed.children:
+            points = bezier_points(
+                placed.box.right,
+                placed.box.center_y,
+                child.box.left,
+                child.box.center_y,
+            )
+            edges.append(
+                Edge(
+                    points=points,
+                    color=child.accent,
+                    width=2.4 if placed.depth == 0 else 1.8,
+                )
+            )
+            collect(child)
+
+    collect(root_placed)
+
+    layout = Layout(
+        root=root_placed,
+        nodes=placed_nodes,
+        width=width,
+        height=height,
+        config=config,
+        edges=edges,
+        kind="mindmap",
+    )
+    if min_top < 0:
+        layout.shift(0.0, -min_top)
+        layout.height -= min_top
+    return layout
 
 
 def node_edges(placed: Placed) -> List[tuple[float, float, float, float, str, int]]:
-    """产出 (x1, y1, x2, y2, 颜色, 线宽) 边线描述。"""
+    """兼容旧接口：产出 (x1, y1, x2, y2, 颜色, 线宽) 边线描述。"""
     edges = []
     for child in placed.children:
         width = 2.4 if placed.depth == 0 else 1.8

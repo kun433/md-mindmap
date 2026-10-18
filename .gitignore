@@ -8,6 +8,7 @@ __pycache__/
 
 # 本地导出与临时文件
 out/
+.tmp_preview/
 .venv/
 venv/
 .idea/

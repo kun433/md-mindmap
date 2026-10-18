@@ -8,9 +8,10 @@ import sys
 from typing import List, Optional
 
 from md_mindmap import __version__
+from md_mindmap.diagrams import DIAGRAM_KINDS, build_diagram
 from md_mindmap.exporter import export_all, render_png
-from md_mindmap.layout import LayoutConfig, build_layout
-from md_mindmap.parser import parse_markdown
+from md_mindmap.layout import LayoutConfig
+from md_mindmap.parser import parse_document
 from md_mindmap.theme import THEMES
 
 FORMATS = ["png", "svg", "html"]
@@ -34,12 +35,19 @@ def convert(
     theme: str = "light",
     prefer_mermaid: bool = True,
     scale: int = 2,
+    diagram: str = "auto",
+    transparent: bool = False,
 ) -> List[str]:
     """把 Markdown 文件转换成语义化图片，返回输出文件列表。"""
     text = _read_text(markdown_path)
     title = os.path.splitext(os.path.basename(markdown_path))[0]
-    tree = parse_markdown(text, title=title, prefer_mermaid=prefer_mermaid)
-    layout = build_layout(tree, LayoutConfig())
+    document = parse_document(
+        text,
+        title=title,
+        prefer_mermaid=prefer_mermaid,
+        diagram=diagram,
+    )
+    layout = build_diagram(document.root, document.kind, LayoutConfig())
     selected = [item.strip().lower() for item in formats.split(",") if item.strip()]
     unknown = [item for item in selected if item not in FORMATS]
     if unknown:
@@ -53,7 +61,9 @@ def convert(
     outputs: List[str] = []
     for kind in selected:
         if kind == "png":
-            outputs.append(render_png(layout, base + ".png", active_theme, scale=scale))
+            outputs.append(
+                render_png(layout, base + ".png", active_theme, scale=scale, transparent=transparent)
+            )
         else:
             outputs.extend(export_all(layout, base, active_theme, [kind], title=title))
     return outputs
@@ -62,13 +72,20 @@ def convert(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="md-mindmap",
-        description="把 Markdown 大纲转换成思维导图（PNG / SVG / HTML）。",
+        description="把 Markdown 大纲转换成思维导图 / 鱼骨图 / 时间轴 / 组织结构图（PNG / SVG / HTML）。",
     )
     parser.add_argument("markdown", nargs="?", help="Markdown 文件路径；不带参数则打开图形界面")
     parser.add_argument("-o", "--output", help="输出文件前缀或目录，默认与源文件同名同目录")
     parser.add_argument("--formats", default="png,svg,html", help="导出格式，逗号分隔（png,svg,html）")
     parser.add_argument("--theme", default="light", choices=sorted(THEMES), help="配色主题")
     parser.add_argument("--scale", type=int, default=2, help="PNG 超采样倍数（1-4）")
+    parser.add_argument("--transparent", action="store_true", help="PNG 使用透明背景")
+    parser.add_argument(
+        "--diagram",
+        default="auto",
+        metavar="KIND",
+        help="图形类型：auto / mindmap / fishbone / timeline / org（也接受中文名），可选 " + " / ".join(["auto"] + list(DIAGRAM_KINDS)),
+    )
     parser.add_argument("--document-structure", action="store_true", help="忽略 mermaid 代码块，按文档结构解析")
     parser.add_argument("--gui", action="store_true", help="强制打开图形界面")
     parser.add_argument("--selftest", action="store_true", help="打包自检：渲染并导出一次示例图")
@@ -166,7 +183,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.gui or not args.markdown:
         from md_mindmap.app import launch
 
-        launch(args.markdown)
+        launch(args.markdown, kind=args.diagram)
         return 0
 
     attached = _attach_console()
@@ -183,6 +200,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         theme=args.theme,
         prefer_mermaid=not args.document_structure,
         scale=args.scale,
+        diagram=args.diagram,
+        transparent=args.transparent,
     )
     summary = "\n".join(f"已生成 {path}" for path in outputs)
     if attached:

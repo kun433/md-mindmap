@@ -1,4 +1,4 @@
-"""图形界面冒烟测试：构建窗口、渲染画布、导出后自动关闭。
+"""图形界面冒烟测试：构建窗口、切换四种图形、导出后自动关闭。
 
 运行：``python tests/smoke_gui.py``（窗口会短暂出现，用于验证界面不报错）。
 """
@@ -20,7 +20,9 @@ except Exception:
 import tkinter as tk
 
 from md_mindmap.app import MindMapApp
+from md_mindmap.diagrams import DIAGRAM_KINDS
 from md_mindmap.exporter import render_png
+from md_mindmap.templates import template_for
 
 
 def main() -> int:
@@ -32,17 +34,29 @@ def main() -> int:
         root.update_idletasks()
         root.update()
         app.refresh(fit=True)
+
+        for kind in DIAGRAM_KINDS:
+            _title, text = template_for(kind)
+            app.editor.delete("1.0", "end")
+            app.editor.insert("1.0", text)
+            app.set_diagram(kind)
+            root.update()
+            if app.kind != kind:
+                raise AssertionError(f"切换到 {kind} 后场景类型是 {app.kind}")
+            if app.layout is None or not app.layout.nodes:
+                raise AssertionError(f"{kind} 布局为空")
+            print(f"{kind}: {len(app.layout.nodes)} 个节点 / {len(app.layout.edges)} 条连线")
+
         app.zoom(1.1)
         app.zoom(1 / 1.1)
         app.collapse_to_level_two()
         app.set_all_collapsed(False)
         app.set_theme("dark")
         app.set_theme("light")
-        if app.layout is None:
-            raise AssertionError("布局为空")
-        placed = app.layout.nodes[1]
+        app.load_template_cycle()
         app.canvas.event_generate("<ButtonPress-1>", x=0, y=0)
         root.update()
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = render_png(app.layout, os.path.join(tmp_dir, "smoke.png"), app.theme)
             size = os.path.getsize(path)
@@ -50,7 +64,7 @@ def main() -> int:
             if size < 500:
                 raise AssertionError("导出 PNG 异常")
         print(f"画布元素数: {len(app.canvas.find_all())}")
-        print(f"首个节点: {placed.node.text[:20]}")
+        print(f"当前图形: {app.kind} · {app.status_var.get()}")
     except BaseException as exc:  # noqa: BLE001
         error.append(exc)
         traceback.print_exc()
