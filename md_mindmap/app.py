@@ -22,6 +22,30 @@ APP_NAME = "Markdown 图形工坊"
 SAMPLE_MD = template_for("mindmap")[1]
 AUTO_LABEL = "自动识别"
 
+# 窗口界面（非画布）配色，让深色模式整体协调
+UI_THEMES = {
+    "light": {
+        "bg": "#F6F6F3",
+        "panel": "#FFFFFF",
+        "ink": "#1F2430",
+        "muted": "#6B7280",
+        "line": "#D9D9D2",
+        "hover": "#EDEDE8",
+        "accent": "#002FA7",
+        "select": "#D6E0FA",
+    },
+    "dark": {
+        "bg": "#14161B",
+        "panel": "#1B1E24",
+        "ink": "#E8EAF0",
+        "muted": "#98A2B3",
+        "line": "#2C313A",
+        "hover": "#23272F",
+        "accent": "#7AA2F7",
+        "select": "#2B3A5C",
+    },
+}
+
 
 def resource_path(relative: str) -> str:
     """兼容 PyInstaller 打包后的资源路径。"""
@@ -84,17 +108,112 @@ class MindMapApp:
                 pass
 
     def _build_style(self) -> None:
-        style = ttk.Style()
+        self.style = ttk.Style()
         try:
-            style.theme_use("clam")
+            self.style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TFrame", background="#F6F6F3")
-        style.configure("TButton", padding=(10, 6), font=(self.family, 10))
-        style.configure("TCheckbutton", background="#F6F6F3", font=(self.family, 10))
-        style.configure("TLabel", background="#F6F6F3", font=(self.family, 10))
-        style.configure("Hint.TLabel", foreground="#6B7280", font=(self.family, 9))
-        style.configure("TCombobox", font=(self.family, 10))
+        self.style.configure("TButton", padding=(10, 6), font=(self.family, 10))
+        self.style.configure("TCheckbutton", font=(self.family, 10))
+        self.style.configure("TLabel", font=(self.family, 10))
+        self.style.configure("Hint.TLabel", font=(self.family, 9))
+        self.style.configure("TCombobox", font=(self.family, 10))
+        self._apply_ui_theme()
+
+    def _apply_ui_theme(self) -> None:
+        """让窗口、编辑器与画布一起跟随浅色 / 深色主题。"""
+        palette = UI_THEMES["dark" if self.theme.dark else "light"]
+        style = self.style
+        self.root.configure(background=palette["bg"])
+        for name in ("TFrame", "TPanedwindow", "TLabelframe"):
+            style.configure(name, background=palette["bg"])
+        style.configure("TLabel", background=palette["bg"], foreground=palette["ink"])
+        style.configure("Hint.TLabel", background=palette["bg"], foreground=palette["muted"])
+        style.configure("TCheckbutton", background=palette["bg"], foreground=palette["ink"])
+        style.map(
+            "TCheckbutton",
+            background=[("active", palette["bg"])],
+            foreground=[("disabled", palette["muted"])],
+        )
+        style.configure(
+            "TButton",
+            background=palette["panel"],
+            foreground=palette["ink"],
+            bordercolor=palette["line"],
+            lightcolor=palette["panel"],
+            darkcolor=palette["panel"],
+            focuscolor=palette["bg"],
+        )
+        style.map(
+            "TButton",
+            background=[("active", palette["hover"]), ("pressed", palette["hover"])],
+            foreground=[("active", palette["accent"])],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=palette["panel"],
+            background=palette["panel"],
+            foreground=palette["ink"],
+            arrowcolor=palette["ink"],
+            bordercolor=palette["line"],
+            lightcolor=palette["panel"],
+            darkcolor=palette["panel"],
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", palette["panel"])],
+            foreground=[("readonly", palette["ink"])],
+        )
+        style.configure(
+            "Vertical.TScrollbar",
+            background=palette["hover"],
+            troughcolor=palette["bg"],
+            bordercolor=palette["bg"],
+            arrowcolor=palette["muted"],
+            lightcolor=palette["hover"],
+            darkcolor=palette["hover"],
+            gripcount=0,
+        )
+        style.map(
+            "Vertical.TScrollbar",
+            background=[("active", palette["line"]), ("pressed", palette["accent"])],
+        )
+        style.configure(
+            "TCheckbutton",
+            indicatorbackground=palette["panel"],
+            indicatorforeground=palette["accent"],
+            upperbordercolor=palette["line"],
+            lowerbordercolor=palette["line"],
+        )
+        style.map(
+            "TCheckbutton",
+            indicatorbackground=[
+                ("selected", palette["accent"]),
+                ("active", palette["panel"]),
+            ],
+            indicatorforeground=[("selected", "#FFFFFF")],
+        )
+        self.root.option_add("*TCombobox*Listbox.background", palette["panel"])
+        self.root.option_add("*TCombobox*Listbox.foreground", palette["ink"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", palette["accent"])
+        if hasattr(self, "editor"):
+            self.editor.configure(
+                background=palette["panel"],
+                foreground=palette["ink"],
+                insertbackground=palette["accent"],
+                selectbackground=palette["select"],
+                selectforeground=palette["ink"],
+            )
+        for check in getattr(self, "checks", []):
+            check.configure(
+                background=palette["bg"],
+                foreground=palette["ink"],
+                activebackground=palette["bg"],
+                activeforeground=palette["accent"],
+                selectcolor=palette["panel"],
+            )
+        if hasattr(self, "canvas"):
+            self.canvas.configure(background=self.theme.bg)
 
     @staticmethod
     def _label_for(kind: str) -> str:
@@ -188,14 +307,35 @@ class MindMapApp:
         self.diagram_box.bind("<<ComboboxSelected>>", self._on_diagram_change)
 
         ttk.Label(toolbar, text="  ").pack(side="left")
+        # 用经典 tk.Checkbutton：clam 主题的 ttk 勾选框在当前 Tk 下把选中画成「✗」，
+        # 经典控件能画出正常的对勾，且颜色可以跟随主题。
         self.auto_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            toolbar, text="自动刷新", variable=self.auto_var, command=self._schedule_update
-        ).pack(side="left")
+        self.checks = []
+        auto_check = tk.Checkbutton(
+            toolbar,
+            text="自动刷新",
+            variable=self.auto_var,
+            command=self._schedule_update,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            font=(self.family, 10),
+        )
+        auto_check.pack(side="left")
+        self.checks.append(auto_check)
         self.mermaid_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            toolbar, text="优先 mermaid", variable=self.mermaid_var, command=lambda: self.refresh(fit=True)
-        ).pack(side="left", padx=8)
+        mermaid_check = tk.Checkbutton(
+            toolbar,
+            text="优先 mermaid",
+            variable=self.mermaid_var,
+            command=lambda: self.refresh(fit=True),
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            font=(self.family, 10),
+        )
+        mermaid_check.pack(side="left", padx=8)
+        self.checks.append(mermaid_check)
 
         ttk.Button(toolbar, text="导出", command=lambda: self.export("all")).pack(side="right")
         ttk.Button(toolbar, text="深色", command=self.toggle_theme).pack(side="right", padx=6)
@@ -366,11 +506,13 @@ class MindMapApp:
     # 绘制
     # ------------------------------------------------------------------ #
     def _font(self, size: int, bold: bool = False) -> "tkfont.Font":
+        # 使用负数字号让 Tk 按「像素」而不是「点」渲染，与 Pillow 的测量结果一致，
+        # 否则 Tk 字体会比测量的宽度大约 20%，导致节点文字溢出边框。
         size = max(8, int(size))
         key = (size, bold)
         if key not in self._node_fonts:
             self._node_fonts[key] = tkfont.Font(
-                family=self.family, size=size, weight="bold" if bold else "normal"
+                family=self.family, size=-size, weight="bold" if bold else "normal"
             )
         return self._node_fonts[key]
 
@@ -379,7 +521,7 @@ class MindMapApp:
 
     def set_theme(self, name: str) -> None:
         self.theme = THEMES.get(name, LIGHT)
-        self.canvas.configure(background=self.theme.bg)
+        self._apply_ui_theme()
         self.redraw()
 
     def toggle_theme(self) -> None:

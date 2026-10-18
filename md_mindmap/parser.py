@@ -88,11 +88,16 @@ def clean_inline(text: str) -> str:
 
 
 def _task_prefix(text: str) -> str:
-    """把 ``- [x] 事项`` 转成带勾选符号的文本。"""
+    """把 ``- [x] 事项`` 转成带勾选符号的文本。
+
+    勾选符号用 ``√`` / ``□``：微软雅黑本身就有这两个字形，
+    Pillow、Tk 与浏览器渲染一致；``☑`` / ``☐`` / ``✓`` 在中文字体里缺字，
+    导出时会变成方块，还会因为字体回退把文字挤出节点框。
+    """
     match = _TASK_RE.match(text)
     if not match:
         return text
-    mark = "☑" if match.group(1).lower() == "x" else "☐"
+    mark = "√" if match.group(1).lower() == "x" else "□"
     return f"{mark} {match.group(2).strip()}"
 
 

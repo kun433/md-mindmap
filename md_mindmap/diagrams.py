@@ -86,7 +86,9 @@ def _text_line(text: str) -> str:
 def _empty_layout(root: Node, config: LayoutConfig, accents: Sequence[str], kind: str) -> Layout:
     """只有根节点的退化场景。"""
     measurer = Measurer(config)
-    box = measurer.box(root.text, config.root_font_size, config.root_max_text_width, min_width=120)
+    box = measurer.box(
+        root.text, config.root_font_size, config.root_max_text_width, min_width=120, bold=True
+    )
     box.left = 0.0
     box.top = 0.0
     placed = Placed(node=root, depth=0, box=box, accent=accents[0])
@@ -128,7 +130,7 @@ def build_org(
 
     def measure(node: Node, depth: int) -> None:
         limit = 300 if depth == 0 else 210
-        box = measurer.box(node.text, node_font(depth), limit, min_width=96)
+        box = measurer.box(node.text, node_font(depth), limit, min_width=96, bold=depth == 0)
         sizes[id(node)] = box
         level_height[depth] = max(level_height.get(depth, 0.0), box.height)
         if not node.collapsed:
@@ -237,7 +239,7 @@ def build_fishbone(
         return _empty_layout(root, config, accents, "fishbone")
 
     measurer = Measurer(config)
-    head = measurer.box(root.text, config.root_font_size, 260, min_width=132)
+    head = measurer.box(root.text, config.root_font_size, 260, min_width=132, bold=True)
     label_font = max(config.min_font_size + 1, config.root_font_size - 4)
     row_font = config.min_font_size
 
@@ -266,7 +268,7 @@ def build_fishbone(
             )
 
         def _collect(self, node: Node, indent: int) -> None:
-            prefix = "" if indent == 0 else "  " * indent + "↳ "
+            prefix = "" if indent == 0 else "  " * indent + "› "
             text = prefix + _text_line(node.text)
             if text.strip():
                 self.rows.append((text, measurer.box(text, row_font, 260, pad_x=0, pad_y=0)))
@@ -394,7 +396,7 @@ def build_timeline(
     event_font = max(config.min_font_size + 1, config.root_font_size - 4)
     detail_font = config.min_font_size
 
-    root_box = measurer.box(root.text, title_font, 520, min_width=140)
+    root_box = measurer.box(root.text, title_font, 520, min_width=140, bold=True)
 
     class Event:
         def __init__(self, index: int, node: Node) -> None:
@@ -419,7 +421,7 @@ def build_timeline(
 
         def _detail_lines(self, node: Node, depth: int, lines: List[str]) -> None:
             for child in node.children:
-                prefix = "· " if depth == 0 else "  " * depth + "↳ "
+                prefix = "· " if depth == 0 else "  " * depth + "› "
                 lines.append(prefix + _text_line(child.text))
                 if not child.collapsed:
                     self._detail_lines(child, depth + 1, lines)

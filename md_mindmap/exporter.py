@@ -12,7 +12,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw
 
-from .fonts import load_font
+from .fonts import text_runs
 from .layout import Layout, Placed
 from .theme import LIGHT, Theme
 
@@ -27,7 +27,10 @@ __all__ = [
 ]
 
 MARGIN = 36
-_FONT_STACK = "'Microsoft YaHei','微软雅黑','PingFang SC','Source Han Sans SC','Segoe UI',sans-serif"
+_FONT_STACK = (
+    "'Microsoft YaHei','微软雅黑','PingFang SC','Source Han Sans SC',"
+    "'Segoe UI Symbol','Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif"
+)
 
 
 def _pairs(points: Sequence[float]) -> List[Tuple[float, float]]:
@@ -146,14 +149,18 @@ def _draw_node_png(
             width=max(1, int(border_width * scale)) if border_width > 0 else 0,
         )
 
-    font = load_font(int(box.font_size * scale), bold=placed.shape == "box" and placed.depth == 0)
+    bold = placed.shape == "box" and placed.depth == 0
+    size = int(box.font_size * scale)
     text_x = left + box.pad_x * scale
     line_height = box.line_spacing * box.font_size * scale
     for index, line in enumerate(box.lines):
         if not line:
             continue
         center_y = top + box.pad_y * scale + line_height * (index + 0.5)
-        draw.text((text_x, center_y), line, font=font, fill=text_color, anchor="lm")
+        cursor = text_x
+        for chunk, chunk_font in text_runs(line, size, bold):
+            draw.text((cursor, center_y), chunk, font=chunk_font, fill=text_color, anchor="lm")
+            cursor += chunk_font.getlength(chunk)
 
 
 # --------------------------------------------------------------------------- #

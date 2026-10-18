@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 
 from PIL import ImageFont
 
-from .fonts import load_font
+from .fonts import fallback_char_count, load_font, run_width
 from .parser import Node
 
 __all__ = [
@@ -45,6 +45,9 @@ ACCENTS: List[str] = [
     "#946200",
     "#3B5BDB",
 ]
+
+TEXT_SAFETY = 2.0  # 文本宽度安全余量（像素）
+FALLBACK_SLACK = 0.4  # 每个兜底字符（emoji / 缺字符号）额外预留的宽度系数
 
 _CJK_RE = re.compile(
     r"[\u1100-\u115F\u2E80-\uA4CF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF"
@@ -195,8 +198,23 @@ def _chunks(text: str) -> List[str]:
     return chunks
 
 
-def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> List[str]:
-    """按像素宽度换行，同时保留原文中的显式换行。"""
+def wrap_text(
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: float,
+    size: Optional[int] = None,
+    bold: bool = False,
+) -> List[str]:
+    """按像素宽度换行，同时保留原文中的显式换行。
+
+    传入 ``size`` 时使用兜底字体规则测量，emoji / 符号的宽度与最终绘制一致。
+    """
+
+    def measure(value: str) -> float:
+        if size is None:
+            return font.getlength(value)
+        return run_width(value, size, bold)
+
     result: List[str] = []
     for raw_line in text.split("\n"):
         raw_line = raw_line.strip()
@@ -206,7 +224,7 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> List
         current = ""
         for chunk in _chunks(raw_line):
             candidate = current + chunk
-            if not current or font.getlength(candidate) <= max_width:
+            if not current or measure(candidate) <= max_width:
                 current = candidate
             else:
                 result.append(current.rstrip())
@@ -222,16 +240,17 @@ class Measurer:
 
     def __init__(self, config: Optional[LayoutConfig] = None) -> None:
         self.config = config or LayoutConfig()
-        self._fonts: Dict[int, ImageFont.FreeTypeFont] = {}
+        self._fonts: Dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
 
-    def font(self, size: int) -> ImageFont.FreeTypeFont:
+    def font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
         size = max(8, int(size))
-        if size not in self._fonts:
-            self._fonts[size] = load_font(size)
-        return self._fonts[size]
+        key = (size, bold)
+        if key not in self._fonts:
+            self._fonts[key] = load_font(size, bold)
+        return self._fonts[key]
 
-    def text_width(self, text: str, size: int) -> float:
-        font = self.font(size)
+    def text_width(self, text: str, size: int, bold: bool = False) -> float:
+        font = self.font(size, bold)
         return max((font.getlength(line) for line in text.split("\n")), default=0.0)
 
     def box(
@@ -243,15 +262,19 @@ class Measurer:
         pad_y: Optional[float] = None,
         min_width: float = 0.0,
         line_spacing: Optional[float] = None,
+        bold: bool = False,
     ) -> Box:
         config = self.config
         pad_x = config.pad_x if pad_x is None else pad_x
         pad_y = config.pad_y if pad_y is None else pad_y
         line_spacing = config.line_spacing if line_spacing is None else line_spacing
-        font = self.font(font_size)
-        lines = wrap_text(text, font, max_width)
-        text_width = max((font.getlength(line) for line in lines), default=0.0)
-        width = max(min_width, text_width + 2 * pad_x)
+        font = self.font(font_size, bold)
+        lines = wrap_text(text, font, max_width, size=int(font_size), bold=bold)
+        text_width = max((run_width(line, font_size, bold) for line in lines), default=0.0)
+        # 多留安全余量：Pillow、Tk 与浏览器对符号 / emoji 的宽度略有差异，
+        # Tk 会把缺字交给系统字体回退，通常比 Pillow 测得更宽
+        slack = TEXT_SAFETY + FALLBACK_SLACK * font_size * fallback_char_count(text)
+        width = max(min_width, text_width + 2 * pad_x + slack)
         height = len(lines) * line_spacing * font_size + 2 * pad_y
         return Box(
             0.0,
@@ -287,7 +310,9 @@ def build_layout(
     def measure(node: Node, depth: int) -> None:
         size = config.font_size_at(depth)
         limit = config.root_max_text_width if depth == 0 else config.max_text_width
-        box = measurer.box(node.text, size, limit, min_width=config.min_width)
+        box = measurer.box(
+            node.text, size, limit, min_width=config.min_width, bold=depth == 0
+        )
         sizes[id(node)] = box
         column_width[depth] = max(column_width.get(depth, 0.0), box.width)
         if not node.collapsed:
